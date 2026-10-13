@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>카카오맵 산책 서비스</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      display: flex;
+      height: 100vh;
+      font-family: 'Noto Sans KR', sans-serif;
+    }
+    /* 왼쪽 사이드바 스타일 */
+    #sidebar {
+      width: 320px;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #ccc;
+      background-color: #f9f9f9;
+      z-index: 2;
+    }
+    /* 탭 버튼 영역 */
+    .tab-container {
+      display: flex;
+      background-color: #fff;
+      border-bottom: 1px solid #ddd;
+    }
+    .tab-button {
+      flex: 1;
+      padding: 15px;
+      border: none;
+      background: none;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      color: #666;
+      transition: all 0.2s ease;
+    }
+    .tab-button.active {
+      color: #333;
+      border-bottom: 3px solid #ffe812; /* 카카오 노란색 포인트 */
+      background-color: #fff;
+    }
+    /* 장소 리스트 영역 */
+    #place-list {
+      flex: 1;
+      overflow-y: auto;
+      list-style: none;
+    }
+    .place-item {
+      padding: 15px;
+      border-bottom: 1px solid #eee;
+      background-color: #fff;
+      cursor: pointer;
+    }
+    .place-item:hover {
+      background-color: #f0f0f0;
+    }
+    .place-name {
+      font-weight: bold;
+      font-size: 15px;
+      color: #333;
+      margin-bottom: 5px;
+    }
+    .place-address {
+      font-size: 13px;
+      color: #777;
+    }
+    /* 오른쪽 지도 영역 */
+    #map {
+      flex: 1;
+      height: 100%;
+    }
+  </style>
+  <!-- 카카오맵 API 로드 (키 적용 완료, services 라이브러리 포함) -->
+  <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey=830ce74dec34efe760bc1541edecfd9e&libraries=services"></script>
+</head>
+<body>
+
+  <!-- 왼쪽 사이드바 -->
+  <div id="sidebar">
+    <div class="tab-container">
+      <button class="tab-button active" onclick="switchTab('park', this)">공원</button>
+      <button class="tab-button" onclick="switchTab('store', this)">편의점</button>
+    </div>
+    <ul id="place-list"></ul>
+  </div>
+
+  <!-- 지도 표시 영역 -->
+  <div id="map"></div>
+
+  <script>
+    // 기본 중심 좌표 (위치 정보를 못 가져올 경우 서울시청 기준)
+    let currentLat = 37.566826;
+    let currentLng = 126.978656;
+
+    // 지도, 장소 검색 서비스, 인포윈도우 객체 변수
+    let map;
+    let ps;
+    let infowindow;
+
+    // 지도 위에 표시된 마커 목록 관리 배열
+    let currentMarkers = [];
+
+    // 현재 선택된 탭 정보 ('park' 또는 'store')
+    let currentCategory = 'park';
+
+    // 카테고리별 마커 이미지 URL 설정
+    const MARKER_IMAGES = {
+      park: 'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png', // 공원용 별 마커
+      store: 'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/places_category.png' // 편의점용 기본 카테고리 마커
+    };
+
+    // 페이지 로드 시 실행
+    window.onload = function() {
+      const container = document.getElementById('map');
+      const options = {
+        center: new kakao.maps.LatLng(currentLat, currentLng),
+        level: 4
+      };
+
+      // 지도 생성 및 서비스 초기화
+      map = new kakao.maps.Map(container, options);
+      ps = new kakao.maps.services.Places();
+      infowindow = new kakao.maps.InfoWindow({ zIndex: 1 });
+
+      // 사용자 현재 위치 가져오기
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          function(position) {
+            currentLat = position.coords.latitude;
+            currentLng = position.coords.longitude;
+            const locPosition = new kakao.maps.LatLng(currentLat, currentLng);
+
+            // 현재 위치로 지도 중심 이동
+            map.setCenter(locPosition);
+
+            // 초기 탭(공원) 검색 실행
+            searchPlaces();
+          },
+          function(err) {
+            console.warn('위치 정보를 가져올 수 없어 기본 위치로 검색합니다.');
+            searchPlaces();
+          }
+        );
+      } else {
+        searchPlaces();
+      }
+    };
+
+    // 탭 전환 함수
+    function switchTab(category, element) {
+      if (currentCategory === category) return;
+
+      currentCategory = category;
+
+      // 탭 버튼 스타일 전환
+      const buttons = document.querySelectorAll('.tab-button');
+      buttons.forEach(btn => btn.classList.remove('active'));
+      element.classList.add('active');
+
+      // 기존 결과 지우고 새로 검색
+      clearPreviousResults();
+      searchPlaces();
+    }
+
+    // 장소 검색 함수
+    function searchPlaces() {
+      const searchOptions = {
+        location: new kakao.maps.LatLng(currentLat, currentLng),
+        radius: 2000 // 중심 좌표 기준 반경 2km 이내 검색
+      };
+
+      if (currentCategory === 'park') {
+        // 공원: 검색어 '공원'으로 키워드 검색
+        ps.keywordSearch('공원', placesSearchCallback, searchOptions);
+      } else if (currentCategory === 'store') {
+        // 편의점: 카테고리 코드 'CS2'로 검색
+        ps.categorySearch('CS2', placesSearchCallback, searchOptions);
+      }
+    }
+
+    // 검색 결과 콜백 함수
+    function placesSearchCallback(data, status, pagination) {
+      if (status === kakao.maps
